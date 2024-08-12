@@ -15,8 +15,6 @@ import (
     "github.com/bwmarrin/discordgo"
 )
 
-const MAX_POSTS = 5
-
 // Bot parameters
 var (
     GuildID        = flag.String("guild", "", "Test guild ID. If not passed - bot registers commands globally")
@@ -26,9 +24,13 @@ var (
 )
 func init() { flag.Parse() }
 
-type PostCounter struct {
-    postCounts map[string]int
-    mu         sync.Mutex
+type BotState struct {
+    PostCounter             map[string]uint
+    LastConfessionMessageID string
+    ConfessionNo            uint
+    Active                  bool
+    MaxPosts                uint
+    mu                      sync.Mutex
 }
 
 func init() {
@@ -37,7 +39,6 @@ func init() {
     if err != nil {
         log.Fatalf("Invalid bot parameters: %v", err)
     }
-    fmt.Print("s:\n", s)
 }
 
 var s *discordgo.Session
@@ -45,13 +46,17 @@ var s *discordgo.Session
 var (
     dmPermission                   = false
     defaultMemberPermissions int64 = discordgo.PermissionManageServer
-    lastConfessionMessageID string
     salt = generateRandomSalt()
 
-    counter = &PostCounter{
-        postCounts: make(map[string]int),
+    botState = BotState{
+        PostCounter:               make(map[string]uint),
+        LastConfessionMessageID:   "",
+        ConfessionNo:              0,
+        Active:                    true,
+        MaxPosts:                  2,
     }
 
+    integerOptionMinValue          = 1.0
     commands = []*discordgo.ApplicationCommand{
         {
             Name:        "confess",
@@ -66,9 +71,6 @@ var (
                 },
             },
         },
-
-        /***************************************************************
-
         {
             Name:        "select-channel",
             Description: "choose confession channel target",
@@ -95,22 +97,29 @@ var (
                 },
             },
         },
+        {
+            Name:        "set-max-confessions",
+            Description: "set the maximum number of confessions per user",
+            Options: []*discordgo.ApplicationCommandOption{
 
-        ********************************************************************/
-
+                {
+                    Type:        discordgo.ApplicationCommandOptionInteger,
+                    Name:        "count",
+                    Description: "# of confessions allowd per user",
+                    MinValue:    &integerOptionMinValue,
+                    MaxValue:    1 << 31,
+                    Required:    true,
+                },
+            },
+        },
+        {
+            Name:        "reset-post-counter",
+            Description: "Allow everyone to confess again, i.e. reset the post counter.",
+        },
     }
 
     commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
         "confess": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-            sendEphemeralMessage := func(content string) {
-                s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-                    Type: discordgo.InteractionResponseChannelMessageWithSource,
-                    Data: &discordgo.InteractionResponseData{
-                        Flags:   discordgo.MessageFlagsEphemeral,
-                        Content: content,
-                    },
-                })
-            }
 
             confession := i.ApplicationCommandData().Options[0].StringValue()
             userID := i.Member.User.ID
@@ -119,18 +128,92 @@ var (
             err := processConfession(s, confession, userID, guildID)
             if err != nil {
                 if err.Error() == "you have exceeded the maximum number of allowed posts" {
-                    sendEphemeralMessage(":x: You have exceeded the maximum number of allowed posts.")
+                    sendEphemeralMessage(s, i, ":x: You have exceeded the maximum number of allowed posts.")
                 } else {
-                    sendEphemeralMessage(fmt.Sprintf(":x: There was an error processing your confession: %s", err))
+                    sendEphemeralMessage(s, i, fmt.Sprintf(":x: There was an error processing your confession: %s", err))
                 }
                 return
             }
 
-            sendEphemeralMessage(":white_check_mark: Your confession has been posted.")
+            sendEphemeralMessage(s, i, ":white_check_mark: Your confession has been posted.")
         },
 
+        "select-channel": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+            if !hasPermission(s, i) {
+                sendEphemeralMessage(s, i, ":x: You can't do that.")
+                return
+            }
+
+            botState.mu.Lock()
+            defer botState.mu.Unlock()
+
+            // Use ChannelValue() to get the selected channel
+            selectedChannel := i.ApplicationCommandData().Options[0].ChannelValue(s)
+
+            // Set ConfessionChannelID to the selected channel's ID
+            ConfessionChannelID = &selectedChannel.ID
+            botState.LastConfessionMessageID = ""
+
+            sendEphemeralMessage(s, i, ":white_check_mark: Channel updated.")
+        },
+
+
+        "toggle-confessions": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+            if !hasPermission(s, i) {
+                sendEphemeralMessage(s, i, ":x: You can't do that.")
+                return
+            }
+            userOption := i.ApplicationCommandData().Options[0].Value
+
+            // Attempt to cast the value to a bool
+            userBool, ok := userOption.(bool)
+            if !ok {
+                // Handle the error case where the value is not a bool
+                sendEphemeralMessage(s, i, ":x: problem reading boolean")
+                return
+            }
+
+            botState.mu.Lock()
+            defer botState.mu.Unlock()
+            botState.Active = userBool
+            sendEphemeralMessage(s, i, fmt.Sprintf("Taking confessions: %t", userBool))
+        },
+        "set-max-confessions": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+            if !hasPermission(s, i) {
+                sendEphemeralMessage(s, i, ":x: You can't do that.")
+                return
+            }
+            userInt := i.ApplicationCommandData().Options[0].IntValue()
+
+            botState.mu.Lock()
+            defer botState.mu.Unlock()
+            botState.MaxPosts = uint(userInt)
+            sendEphemeralMessage(s, i, fmt.Sprintf("Max # of posts allowed is now: %d", botState.MaxPosts))
+            return
+        },
+        "reset-post-counter": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+            if !hasPermission(s, i) {
+                sendEphemeralMessage(s, i, ":x: You can't do that.")
+                return
+            }
+            botState.mu.Lock()
+            defer botState.mu.Unlock()
+            botState.PostCounter = make(map[string]uint)
+            sendEphemeralMessage(s, i, fmt.Sprintf(":white_check_mark: Reset complete."))
+            return
+        },
     }
 )
+
+func sendEphemeralMessage(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+    s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+        Type: discordgo.InteractionResponseChannelMessageWithSource,
+        Data: &discordgo.InteractionResponseData{
+            Flags:   discordgo.MessageFlagsEphemeral,
+            Content: content,
+        },
+    })
+}
 
 func generateRandomSalt() []byte {
     salt := make([]byte, 16)
@@ -142,7 +225,52 @@ func generateRandomSalt() []byte {
     return salt
 }
 
+
+func checkState() error {
+    botState.mu.Lock()
+    defer botState.mu.Unlock()
+
+    if !botState.Active && *ConfessionChannelID == "" {
+        return fmt.Errorf("The bot is not active now. Also, the target channel is not set.")
+    } else if !botState.Active {
+        return fmt.Errorf("The bot is not active now.")
+    } else if *ConfessionChannelID == ""  {
+        return fmt.Errorf("The target channel is not set.")
+    }
+    return nil
+}
+
+func hasPermission(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+    // Fetch the guild details
+    guild, err := s.State.Guild(i.GuildID)
+    if err != nil {
+        log.Println("Error fetching guild:", err)
+        return false
+    }
+
+    // Check if the user is the server owner
+    if i.Member.User.ID == guild.OwnerID {
+        return true
+    }
+
+    // Fetch the user's permissions in the guild
+    permissions, err := s.State.UserChannelPermissions(i.Member.User.ID, i.ChannelID)
+    if err != nil {
+        log.Println("Error fetching permissions:", err)
+        return false
+    }
+
+    // Check for Administrator or ManageServer permissions
+    return permissions&discordgo.PermissionAdministrator != 0
+}
+
+
 func processConfession(s *discordgo.Session, confession string, userID, guildID string) error {
+
+    if err := checkState(); err != nil {
+        return err
+    }
+
     // 1. Check # of posts
     allowed, err := checkPostLimit(guildID, userID)
     if err != nil {
@@ -153,11 +281,37 @@ func processConfession(s *discordgo.Session, confession string, userID, guildID 
         return fmt.Errorf("you have exceeded the maximum number of allowed posts")
     }
 
-    // 2. Post anonymously
-    _, err = s.ChannelMessageSendComplex(*ConfessionChannelID, &discordgo.MessageSend{
+    botState.mu.Lock()
+    defer botState.mu.Unlock()
+
+    // 2. Edit the last confession message to remove its button
+    if botState.LastConfessionMessageID != "" {
+
+        // Fetch the message to get its current content and embeds
+        message, err := s.ChannelMessage(*ConfessionChannelID, botState.LastConfessionMessageID)
+        if err != nil {
+            return fmt.Errorf("error fetching previous confession message: %w", err)
+        }
+
+        // Edit the message, keeping the same content and embeds but removing the components
+        _, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+            ID:         botState.LastConfessionMessageID,
+            Channel:    *ConfessionChannelID,
+            Content:    &message.Content, // Use the current content
+            Embeds:     &message.Embeds,   // Keep the current embeds
+            Components: &[]discordgo.MessageComponent{}, // Remove the components (buttons)
+        })
+        if err != nil {
+            return fmt.Errorf("error removing button from previous confession: %w", err)
+        }
+    }
+
+
+    // 3. Post the new confession anonymously
+    msg, err := s.ChannelMessageSendComplex(*ConfessionChannelID, &discordgo.MessageSend{
         Embeds: []*discordgo.MessageEmbed{
             {
-                Title:       "Confession # <NUMBER>",
+                Title:       fmt.Sprintf("Confession #%d", botState.ConfessionNo),
                 Description: confession,
             },
         },
@@ -178,8 +332,14 @@ func processConfession(s *discordgo.Session, confession string, userID, guildID 
         return fmt.Errorf("error posting confession: %w", err)
     }
 
+    // 4. Store the message ID of the new confession
+    botState.LastConfessionMessageID = msg.ID
+    botState.ConfessionNo++
+
     return nil
 }
+
+
 
 func handleConfessionModalSubmit(s *discordgo.Session, i *discordgo.InteractionCreate) {
     if i.Type == discordgo.InteractionModalSubmit && i.ModalSubmitData().CustomID == "confession_modal" {
@@ -222,17 +382,16 @@ func generateSecureKey(guildID, userID string) string {
 func checkPostLimit(guildID, userID string) (bool, error) {
     secureKey := generateSecureKey(guildID, userID)
 
-    counter.mu.Lock()
-    defer counter.mu.Unlock()
+    botState.mu.Lock()
+    defer botState.mu.Unlock()
 
-    count := counter.postCounts[secureKey]
-    fmt.Println("COUNT:", count)
+    count := botState.PostCounter[secureKey]
 
-    if count >= MAX_POSTS {
+    if count >= botState.MaxPosts {
         return false, nil
     }
 
-    counter.postCounts[secureKey]++
+    botState.PostCounter[secureKey]++
     return true, nil
 }
 
