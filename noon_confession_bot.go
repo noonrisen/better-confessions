@@ -15,7 +15,7 @@ import (
     "github.com/bwmarrin/discordgo"
 )
 
-const MAX_POSTS = 1
+const MAX_POSTS = 5
 
 // Bot parameters
 var (
@@ -24,15 +24,12 @@ var (
     DeleteCommands = flag.Bool("rmcmd", true, "Remove all commands after shutdowning or not")
     ConfessionChannelID  = flag.String("channel", "", "Target Channel ID")
 )
+func init() { flag.Parse() }
 
 type PostCounter struct {
     postCounts map[string]int
     mu         sync.Mutex
 }
-
-var s *discordgo.Session
-
-func init() { flag.Parse() }
 
 func init() {
     var err error
@@ -43,23 +40,17 @@ func init() {
     fmt.Print("s:\n", s)
 }
 
-func generateRandomSalt() []byte {
-    salt := make([]byte, 16)
-    _, err := rand.Read(salt)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Failed to generate salt: %v\n", err)
-        os.Exit(1)
-    }
-    return salt
-}
+var s *discordgo.Session
 
 var (
+    dmPermission                   = false
+    defaultMemberPermissions int64 = discordgo.PermissionManageServer
+    lastConfessionMessageID string
     salt = generateRandomSalt()
+
     counter = &PostCounter{
         postCounts: make(map[string]int),
     }
-    dmPermission                   = false
-    defaultMemberPermissions int64 = discordgo.PermissionManageServer
 
     commands = []*discordgo.ApplicationCommand{
         {
@@ -111,7 +102,6 @@ var (
 
     commandHandlers = map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
         "confess": func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-
             sendEphemeralMessage := func(content string) {
                 s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
                     Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -122,44 +112,103 @@ var (
                 })
             }
 
-            // 1. check # of posts
-            guildID := i.GuildID
-            fmt.Println("Guild ID:", guildID)
-            userID := i.Member.User.ID
-            fmt.Println("userID :", userID)
-
-            fmt.Println("checking post limit...")
-            allowed, err := checkPostLimit(guildID, userID)
-
-            if err != nil {
-                sendEphemeralMessage(":x: There was an error checking your post limit.")
-                return
-            }
-
-            if !allowed {
-                sendEphemeralMessage(":x: You have exceeded the maximum number of allowed posts.")
-                return
-            }
-
-            // 2. post anonymously
-            fmt.Println("posting confession as bot")
-
             confession := i.ApplicationCommandData().Options[0].StringValue()
+            userID := i.Member.User.ID
+            guildID := i.GuildID
 
-            _, err = s.ChannelMessageSend(*ConfessionChannelID, confession)
-
+            err := processConfession(s, confession, userID, guildID)
             if err != nil {
-                sendEphemeralMessage(":x: There was an error posting your confession.")
+                if err.Error() == "you have exceeded the maximum number of allowed posts" {
+                    sendEphemeralMessage(":x: You have exceeded the maximum number of allowed posts.")
+                } else {
+                    sendEphemeralMessage(fmt.Sprintf(":x: There was an error processing your confession: %s", err))
+                }
                 return
             }
 
-            // 3. successful followup (this appears to the invoking user only)
             sendEphemeralMessage(":white_check_mark: Your confession has been posted.")
-            return
-
         },
+
     }
 )
+
+func generateRandomSalt() []byte {
+    salt := make([]byte, 16)
+    _, err := rand.Read(salt)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Failed to generate salt: %v\n", err)
+        os.Exit(1)
+    }
+    return salt
+}
+
+func processConfession(s *discordgo.Session, confession string, userID, guildID string) error {
+    // 1. Check # of posts
+    allowed, err := checkPostLimit(guildID, userID)
+    if err != nil {
+        return fmt.Errorf("error checking post limit: %w", err)
+    }
+
+    if !allowed {
+        return fmt.Errorf("you have exceeded the maximum number of allowed posts")
+    }
+
+    // 2. Post anonymously
+    _, err = s.ChannelMessageSendComplex(*ConfessionChannelID, &discordgo.MessageSend{
+        Embeds: []*discordgo.MessageEmbed{
+            {
+                Title:       "Confession # <NUMBER>",
+                Description: confession,
+            },
+        },
+        Components: []discordgo.MessageComponent{
+            discordgo.ActionsRow{
+                Components: []discordgo.MessageComponent{
+                    discordgo.Button{
+                        Label:    "Submit a confession!",
+                        CustomID: "confess_button",
+                        Style:    discordgo.PrimaryButton,
+                    },
+                },
+            },
+        },
+    })
+
+    if err != nil {
+        return fmt.Errorf("error posting confession: %w", err)
+    }
+
+    return nil
+}
+
+func handleConfessionModalSubmit(s *discordgo.Session, i *discordgo.InteractionCreate) {
+    if i.Type == discordgo.InteractionModalSubmit && i.ModalSubmitData().CustomID == "confession_modal" {
+        confession := i.ModalSubmitData().Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+        userID := i.Member.User.ID
+        guildID := i.GuildID
+
+        err := processConfession(s, confession, userID, guildID)
+        if err != nil {
+            s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+                Type: discordgo.InteractionResponseChannelMessageWithSource,
+                Data: &discordgo.InteractionResponseData{
+                    Flags:   discordgo.MessageFlagsEphemeral,
+                    Content: fmt.Sprintf(":x: There was an error processing your confession: %s", err),
+                },
+            })
+            return
+        }
+
+        s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+            Type: discordgo.InteractionResponseChannelMessageWithSource,
+            Data: &discordgo.InteractionResponseData{
+                Flags:   discordgo.MessageFlagsEphemeral,
+                Content: ":white_check_mark: Your confession has been posted.",
+            },
+        })
+    }
+}
+
 
 // Generates a secure*** key by hashing guildID and userID with a salt
 func generateSecureKey(guildID, userID string) string {
@@ -187,13 +236,58 @@ func checkPostLimit(guildID, userID string) (bool, error) {
     return true, nil
 }
 
+func handleConfessButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
+    if i.Type == discordgo.InteractionMessageComponent && i.MessageComponentData().CustomID == "confess_button" {
+        modal := discordgo.InteractionResponse{
+            Type: discordgo.InteractionResponseModal,
+            Data: &discordgo.InteractionResponseData{
+                CustomID: "confession_modal",
+                Title:    "Submit Your Confession",
+                Components: []discordgo.MessageComponent{
+                    discordgo.ActionsRow{
+                        Components: []discordgo.MessageComponent{
+                            discordgo.TextInput{
+                                Label:       "Your Confession",
+                                CustomID:    "confession_input",
+                                Style:       discordgo.TextInputParagraph,
+                                Placeholder: "Type your confession here...",
+                                Required:    true,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+
+        err := s.InteractionRespond(i.Interaction, &modal)
+        if err != nil {
+            log.Println("Failed to send modal:", err)
+        }
+    }
+}
+
 func init() {
     s.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-        if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
-            h(s, i)
+        switch i.Type {
+        case discordgo.InteractionApplicationCommand:
+            // Handle slash commands
+            if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
+                h(s, i)
+            }
+        case discordgo.InteractionMessageComponent:
+            // Handle button clicks
+            if i.MessageComponentData().CustomID == "confess_button" {
+                handleConfessButtonClick(s, i)
+            }
+        case discordgo.InteractionModalSubmit:
+            // Handle modal submissions
+            if i.ModalSubmitData().CustomID == "confession_modal" {
+                handleConfessionModalSubmit(s, i)
+            }
         }
     })
 }
+
 
 func main() {
     s.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
