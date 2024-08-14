@@ -7,6 +7,7 @@ import (
     "log"
     "os"
     "sync"
+    "regexp"
     "os/signal"
     "crypto/sha256"
     "encoding/base64"
@@ -281,6 +282,10 @@ func processConfession(s *discordgo.Session, confession string, userID, guildID 
         return fmt.Errorf("you have exceeded the maximum number of allowed posts")
     }
 
+    // Trim excess newlines
+    re := regexp.MustCompile(`\n{3,}`)
+    confession = re.ReplaceAllString(confession, "\n\n")
+
     botState.mu.Lock()
     defer botState.mu.Unlock()
 
@@ -409,6 +414,8 @@ func handleConfessButtonClick(s *discordgo.Session, i *discordgo.InteractionCrea
                                 Label:       "Your Confession",
                                 CustomID:    "confession_input",
                                 Style:       discordgo.TextInputParagraph,
+                                MinLength:   1,
+                                MaxLength:   1024,
                                 Placeholder: "Type your confession here...",
                                 Required:    true,
                             },
