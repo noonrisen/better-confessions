@@ -9,21 +9,21 @@ import (
 	"noon_confession_bot/internal/utils"
 )
 
-type BotState struct {
+type GuildConfig struct {
 	ConfessionChannelID     string
 	PostCounter             map[string]uint
 	LastConfessionMessageID string
 	ConfessionNo            uint
 	Active                  bool
 	MaxPosts                uint
-	RegisteredCommands      []*dg.ApplicationCommand
 	Mu                      sync.Mutex
 }
 
 type Bot struct {
-	State          *BotState
-	Session        *dg.Session
-	DeleteCommands bool
+	Session            *dg.Session
+	DeleteCommands     bool
+	RegisteredCommands []*dg.ApplicationCommand
+	GuildConfigs       map[string]*GuildConfig
 }
 
 var (
@@ -38,6 +38,18 @@ var (
 	}
 )
 
+func NewGuildConfig() GuildConfig {
+	return GuildConfig{
+		ConfessionChannelID:     "",
+		PostCounter:             make(map[string]uint),
+		LastConfessionMessageID: "",
+		ConfessionNo:            0,
+		Active:                  true,
+		MaxPosts:                2,
+		// the mutex's 0 value is already functional
+	}
+}
+
 func NewBot(token string, deleteCommands bool) *Bot {
 	var err error
 	session, err := dg.New("Bot " + token)
@@ -45,21 +57,24 @@ func NewBot(token string, deleteCommands bool) *Bot {
 		log.Fatalf("Invalid bot parameters: %v", err)
 	}
 
-	state := BotState{
-		ConfessionChannelID:     "",
-		PostCounter:             make(map[string]uint),
-		LastConfessionMessageID: "",
-		ConfessionNo:            0,
-		Active:                  true,
-		MaxPosts:                2,
-		RegisteredCommands:      nil,
+	return &Bot{
+		Session:            session,
+		DeleteCommands:     deleteCommands,
+		RegisteredCommands: nil,
+		GuildConfigs:       make(map[string]*GuildConfig),
+	}
+}
+
+func (b *Bot) GetGuildCfg(guildID string) *GuildConfig {
+	gc, ok := b.GuildConfigs[guildID]
+	if ok {
+		return gc
 	}
 
-	return &Bot{
-		State:          &state,
-		Session:        session,
-		DeleteCommands: deleteCommands,
-	}
+	newGuild := NewGuildConfig()
+	b.GuildConfigs[guildID] = &newGuild
+	log.Print("New guild: ", guildID)
+	return &newGuild
 }
 
 func (bot *Bot) Login() {
@@ -100,10 +115,7 @@ func (bot *Bot) SetupCommands() {
 	log.Println("Creating commands...")
 	s := bot.Session
 
-	bot.State.Mu.Lock()
-	defer bot.State.Mu.Unlock()
-
-	bot.State.RegisteredCommands = make([]*dg.ApplicationCommand, len(commandHandlers))
+	bot.RegisteredCommands = make([]*dg.ApplicationCommand, len(commandHandlers))
 
 	for i, v := range Commands {
 		// empty string -> globally-registered commands
@@ -111,6 +123,6 @@ func (bot *Bot) SetupCommands() {
 		if err != nil {
 			log.Panicf("Cannot create '%v' command: %v", v.Name, err)
 		}
-		bot.State.RegisteredCommands[i] = cmd
+		bot.RegisteredCommands[i] = cmd
 	}
 }

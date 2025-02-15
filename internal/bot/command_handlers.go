@@ -31,13 +31,13 @@ func sendEphemeralMessage(s *dg.Session, i *dg.InteractionCreate, content string
 	})
 }
 
-func checkState(s *BotState) error {
+func checkState(gc *GuildConfig) error {
 
-	if !s.Active && s.ConfessionChannelID == "" {
+	if !gc.Active && gc.ConfessionChannelID == "" {
 		return fmt.Errorf("The bot is not active now. Also, the target channel is not set.")
-	} else if !s.Active {
+	} else if !gc.Active {
 		return fmt.Errorf("The bot is not active now.")
-	} else if s.ConfessionChannelID == "" {
+	} else if gc.ConfessionChannelID == "" {
 		return fmt.Errorf("The target channel is not set.")
 	}
 	return nil
@@ -47,22 +47,25 @@ func checkState(s *BotState) error {
 func (b *Bot) checkPostLimit(guildID, userID string) (bool, error) {
 	secureKey := generateSecureKey(guildID, userID)
 
-	count := b.State.PostCounter[secureKey]
+	guildCfg := b.GetGuildCfg(guildID)
 
-	if count >= b.State.MaxPosts {
+	count := guildCfg.PostCounter[secureKey]
+
+	if count >= guildCfg.MaxPosts {
 		return false, nil
 	}
 
-	b.State.PostCounter[secureKey]++
+	guildCfg.PostCounter[secureKey]++
 	return true, nil
 }
 
 func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildID string) error {
+	guildCfg := b.GetGuildCfg(guildID)
 
-	b.State.Mu.Lock()
-	defer b.State.Mu.Unlock()
+	guildCfg.Mu.Lock()
+	defer guildCfg.Mu.Unlock()
 
-	if err := checkState(b.State); err != nil {
+	if err := checkState(guildCfg); err != nil {
 		return err
 	}
 
@@ -81,18 +84,18 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	confession = re.ReplaceAllString(confession, "\n\n")
 
 	// 2. Edit the last confession message to remove its button
-	if b.State.LastConfessionMessageID != "" {
+	if guildCfg.LastConfessionMessageID != "" {
 
 		// Fetch the message to get its current content and embeds
-		message, err := s.ChannelMessage(b.State.ConfessionChannelID, b.State.LastConfessionMessageID)
+		message, err := s.ChannelMessage(guildCfg.ConfessionChannelID, guildCfg.LastConfessionMessageID)
 		if err != nil {
 			return fmt.Errorf("error fetching previous confession message: %w", err)
 		}
 
 		// Edit the message, keeping the same content and embeds but removing the components
 		_, err = s.ChannelMessageEditComplex(&dg.MessageEdit{
-			ID:         b.State.LastConfessionMessageID,
-			Channel:    b.State.ConfessionChannelID,
+			ID:         guildCfg.LastConfessionMessageID,
+			Channel:    guildCfg.ConfessionChannelID,
 			Content:    &message.Content,         // Use the current content
 			Embeds:     &message.Embeds,          // Keep the current embeds
 			Components: &[]dg.MessageComponent{}, // Remove the components (buttons)
@@ -103,10 +106,10 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	}
 
 	// 3. Post the new confession anonymously
-	msg, err := s.ChannelMessageSendComplex(b.State.ConfessionChannelID, &dg.MessageSend{
+	msg, err := s.ChannelMessageSendComplex(guildCfg.ConfessionChannelID, &dg.MessageSend{
 		Embeds: []*dg.MessageEmbed{
 			{
-				Title:       fmt.Sprintf("Confession #%d", b.State.ConfessionNo),
+				Title:       fmt.Sprintf("Confession #%d", guildCfg.ConfessionNo),
 				Description: confession,
 			},
 		},
@@ -128,8 +131,8 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	}
 
 	// 4. Store the message ID of the new confession
-	b.State.LastConfessionMessageID = msg.ID
-	b.State.ConfessionNo++
+	guildCfg.LastConfessionMessageID = msg.ID
+	guildCfg.ConfessionNo++
 
 	return nil
 }
@@ -218,26 +221,31 @@ func (b *Bot) confessHandler(s *dg.Session, i *dg.InteractionCreate) {
 }
 
 func (b *Bot) selectChannelHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
 	if !hasPermission(s, i) {
 		sendEphemeralMessage(s, i, ":x: You can't do that.")
 		return
 	}
 
-	b.State.Mu.Lock()
-	defer b.State.Mu.Unlock()
+	guildCfg.Mu.Lock()
+	defer guildCfg.Mu.Unlock()
 
 	// Use ChannelValue() to get the selected channel
 	selectedChannel := i.ApplicationCommandData().Options[0].ChannelValue(s)
 
 	// Set ConfessionChannelID to the selected channel's ID
-	b.State.ConfessionChannelID = selectedChannel.ID
-	b.State.LastConfessionMessageID = ""
+	guildCfg.ConfessionChannelID = selectedChannel.ID
+	guildCfg.LastConfessionMessageID = ""
 
 	sendEphemeralMessage(s, i, ":white_check_mark: Channel updated.")
-	log.Print("ChanID: ", b.State.ConfessionChannelID)
 }
 
 func (b *Bot) toggleConfessionsHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
 	if !hasPermission(s, i) {
 		sendEphemeralMessage(s, i, ":x: You can't do that.")
 		return
@@ -252,35 +260,41 @@ func (b *Bot) toggleConfessionsHandler(s *dg.Session, i *dg.InteractionCreate) {
 		return
 	}
 
-	b.State.Mu.Lock()
-	defer b.State.Mu.Unlock()
+	guildCfg.Mu.Lock()
+	defer guildCfg.Mu.Unlock()
 
-	b.State.Active = userBool
+	guildCfg.Active = userBool
 	sendEphemeralMessage(s, i, fmt.Sprintf("Taking confessions: %t", userBool))
 }
 
 func (b *Bot) setMaxConfessionsHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
 	if !hasPermission(s, i) {
 		sendEphemeralMessage(s, i, ":x: You can't do that.")
 		return
 	}
 	userInt := i.ApplicationCommandData().Options[0].IntValue()
 
-	b.State.Mu.Lock()
-	defer b.State.Mu.Unlock()
-	b.State.MaxPosts = uint(userInt)
-	sendEphemeralMessage(s, i, fmt.Sprintf("Max # of posts allowed is now: %d", b.State.MaxPosts))
+	guildCfg.Mu.Lock()
+	defer guildCfg.Mu.Unlock()
+	guildCfg.MaxPosts = uint(userInt)
+	sendEphemeralMessage(s, i, fmt.Sprintf("Max # of posts allowed is now: %d", guildCfg.MaxPosts))
 	return
 }
 
 func (b *Bot) resetPostCounterHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
 	if !hasPermission(s, i) {
 		sendEphemeralMessage(s, i, ":x: You can't do that.")
 		return
 	}
-	b.State.Mu.Lock()
-	defer b.State.Mu.Unlock()
-	b.State.PostCounter = make(map[string]uint)
+	guildCfg.Mu.Lock()
+	defer guildCfg.Mu.Unlock()
+	guildCfg.PostCounter = make(map[string]uint)
 	sendEphemeralMessage(s, i, fmt.Sprintf(":white_check_mark: Reset complete."))
 	return
 }

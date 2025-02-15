@@ -29,9 +29,6 @@ func main() {
 	log.Println("Press Ctrl+C to exit")
 	<-stop
 
-	bot.State.Mu.Lock()
-	defer bot.State.Mu.Unlock()
-
 	if bot.DeleteCommands {
 		log.Println("Deleting commands...")
 		// We need to fetch the commands, since deleting requires the command ID.
@@ -39,7 +36,7 @@ func main() {
 		// this will delete all the commands, which might not be desirable, so we
 		// are deleting only the commands that we added.
 
-		for _, v := range bot.State.RegisteredCommands {
+		for _, v := range bot.RegisteredCommands {
 			err := bot.Session.ApplicationCommandDelete(bot.Session.State.User.ID, "", v.ID)
 			if err != nil {
 				log.Printf("Cannot delete '%v' command: %v", v.Name, err)
