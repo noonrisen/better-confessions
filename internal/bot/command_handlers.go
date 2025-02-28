@@ -203,6 +203,19 @@ func confessButtonClickHandler(s *dg.Session, i *dg.InteractionCreate) {
 
 func (b *Bot) confessHandler(s *dg.Session, i *dg.InteractionCreate) {
 
+	if i == nil {
+		log.Print("got nil interaction in confessHandler")
+		sendEphemeralMessage(s, i, "internal problem: tag noon")
+		return
+	}
+
+	if i.Member == nil || i.Member.User == nil {
+		log.Print("got nil interaction Member component in confessHandler")
+		log.Print("i:", i)
+		sendEphemeralMessage(s, i, "internal problem: tag noon")
+		return
+	}
+
 	confession := i.ApplicationCommandData().Options[0].StringValue()
 	userID := i.Member.User.ID
 	guildID := i.GuildID
@@ -307,6 +320,9 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 		return false
 	}
 
+    // TODO: handle i.Member nil
+    // TODO: try i.Member.Permissions instead of UserChannelPermissions.
+
 	// Check if the user is the server owner
 	if i.Member.User.ID == guild.OwnerID {
 		return true
@@ -314,6 +330,7 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 
 	// Fetch the user's permissions in the guild
 	permissions, err := s.State.UserChannelPermissions(i.Member.User.ID, i.ChannelID)
+
 	if err != nil {
 		log.Println("Error fetching permissions:", err)
 		return false
