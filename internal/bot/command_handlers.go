@@ -3,6 +3,7 @@ package bot
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -13,6 +14,21 @@ import (
 //
 // Internals/Helpers
 //
+
+func checkInteractionMemberNil(i *dg.InteractionCreate) error {
+	if i == nil {
+		log.Print("got nil interaction in confessHandler")
+		return errors.New("got nil interaction in confessHandler")
+	}
+
+	if i.Member == nil || i.Member.User == nil {
+		log.Print("got nil interaction Member component in confessHandler")
+		log.Print("i:", i)
+		return errors.New("got nil interaction Member component in confessHandler")
+	}
+    return nil
+}
+
 
 func generateSecureKey(guildID, userID string) string {
 	data := fmt.Sprintf("%s:%s", guildID, userID)
@@ -203,18 +219,11 @@ func confessButtonClickHandler(s *dg.Session, i *dg.InteractionCreate) {
 
 func (b *Bot) confessHandler(s *dg.Session, i *dg.InteractionCreate) {
 
-	if i == nil {
-		log.Print("got nil interaction in confessHandler")
-		sendEphemeralMessage(s, i, "internal problem: tag noon")
-		return
-	}
+    if err := checkInteractionMemberNil(i); err != nil {
+		sendEphemeralMessage(s, i, "internal problem: tag noon if you want to help")
+        return
+    }
 
-	if i.Member == nil || i.Member.User == nil {
-		log.Print("got nil interaction Member component in confessHandler")
-		log.Print("i:", i)
-		sendEphemeralMessage(s, i, "internal problem: tag noon")
-		return
-	}
 
 	confession := i.ApplicationCommandData().Options[0].StringValue()
 	userID := i.Member.User.ID
@@ -320,8 +329,10 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 		return false
 	}
 
-    // TODO: handle i.Member nil
-    // TODO: try i.Member.Permissions instead of UserChannelPermissions.
+    if err := checkInteractionMemberNil(i); err != nil {
+		sendEphemeralMessage(s, i, "internal problem: tag noon if you want to help")
+        return false
+    }
 
 	// Check if the user is the server owner
 	if i.Member.User.ID == guild.OwnerID {
@@ -329,12 +340,7 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 	}
 
 	// Fetch the user's permissions in the guild
-	permissions, err := s.State.UserChannelPermissions(i.Member.User.ID, i.ChannelID)
-
-	if err != nil {
-		log.Println("Error fetching permissions:", err)
-		return false
-	}
+    permissions := i.Member.Permissions
 
 	// Check for Administrator or ManageServer permissions
 	return permissions&dg.PermissionAdministrator != 0
