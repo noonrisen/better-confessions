@@ -24,11 +24,10 @@ type Bot struct {
 	DeleteCommands     bool
 	RegisteredCommands []*dg.ApplicationCommand
 	GuildConfigs       map[string]*GuildConfig
+	Salt               []byte
 }
 
 var (
-	salt = utils.GenerateRandomSalt()
-
 	commandHandlers = map[string]func(b *Bot, s *dg.Session, i *dg.InteractionCreate){
 		"confess":             (*Bot).confessHandler,
 		"select-channel":      (*Bot).selectChannelHandler,
@@ -62,6 +61,7 @@ func NewBot(token string, deleteCommands bool) *Bot {
 		DeleteCommands:     deleteCommands,
 		RegisteredCommands: nil,
 		GuildConfigs:       make(map[string]*GuildConfig),
+		Salt:               utils.GenerateRandomSalt(),
 	}
 }
 

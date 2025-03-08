@@ -10,14 +10,17 @@ import (
 )
 
 var (
-	BotToken       = flag.String("token", "", "Bot access token")
-	DeleteCommands = flag.Bool("rmcmd", true, "Remove all commands after shutdowning or not")
+	botToken       = flag.String("token", "", "Bot access token")
+	deleteCommands = flag.Bool("rmcmd", true, "Remove all commands after shutdowning or not")
+	stateFile      = flag.String("state", "bot_state.gob", "file for saving state")
 )
 
 func main() {
 	flag.Parse()
 
-	bot := bot.NewBot(*BotToken, *DeleteCommands)
+	bot := bot.NewBot(*botToken, *deleteCommands)
+	bot.LoadData(*stateFile)
+
 	bot.AddInteractionHandlers()
 	bot.Login()
 	bot.SetupCommands()
@@ -28,6 +31,9 @@ func main() {
 	signal.Notify(stop, os.Interrupt)
 	log.Println("Press Ctrl+C to exit")
 	<-stop
+
+	// save state
+	bot.SaveData(*stateFile)
 
 	if bot.DeleteCommands {
 		log.Println("Deleting commands...")

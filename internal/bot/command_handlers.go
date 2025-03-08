@@ -26,13 +26,12 @@ func checkInteractionMemberNil(i *dg.InteractionCreate) error {
 		log.Print("i:", i)
 		return errors.New("got nil interaction Member component in confessHandler")
 	}
-    return nil
+	return nil
 }
 
-
-func generateSecureKey(guildID, userID string) string {
+func (b Bot) generateSecureKey(guildID, userID string) string {
 	data := fmt.Sprintf("%s:%s", guildID, userID)
-	saltedData := append([]byte(data), salt...)
+	saltedData := append([]byte(data), b.Salt...)
 	hash := sha256.Sum256(saltedData)
 	return base64.StdEncoding.EncodeToString(hash[:])
 }
@@ -61,7 +60,7 @@ func checkState(gc *GuildConfig) error {
 
 // Function to check the post limit for a user
 func (b *Bot) checkPostLimit(guildID, userID string) (bool, error) {
-	secureKey := generateSecureKey(guildID, userID)
+	secureKey := b.generateSecureKey(guildID, userID)
 
 	guildCfg := b.GetGuildCfg(guildID)
 
@@ -73,6 +72,30 @@ func (b *Bot) checkPostLimit(guildID, userID string) (bool, error) {
 
 	guildCfg.PostCounter[secureKey]++
 	return true, nil
+}
+
+func editLastMessage(s *dg.Session, guildCfg *GuildConfig) {
+	if guildCfg.LastConfessionMessageID != "" {
+
+		// Fetch the message to get its current content and embeds
+		message, err := s.ChannelMessage(guildCfg.ConfessionChannelID, guildCfg.LastConfessionMessageID)
+		if err != nil {
+			log.Printf("error fetching previous confession message: %s", err.Error())
+			return
+		}
+
+		// Edit the message, keeping the same content and embeds but removing the components
+		_, err = s.ChannelMessageEditComplex(&dg.MessageEdit{
+			ID:         guildCfg.LastConfessionMessageID,
+			Channel:    guildCfg.ConfessionChannelID,
+			Content:    &message.Content,         // Use the current content
+			Embeds:     &message.Embeds,          // Keep the current embeds
+			Components: &[]dg.MessageComponent{}, // Remove the components (buttons)
+		})
+		if err != nil {
+			log.Printf("error removing button from previous confession: %s", err.Error())
+		}
+	}
 }
 
 func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildID string) error {
@@ -100,26 +123,7 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	confession = re.ReplaceAllString(confession, "\n\n")
 
 	// 2. Edit the last confession message to remove its button
-	if guildCfg.LastConfessionMessageID != "" {
-
-		// Fetch the message to get its current content and embeds
-		message, err := s.ChannelMessage(guildCfg.ConfessionChannelID, guildCfg.LastConfessionMessageID)
-		if err != nil {
-			return fmt.Errorf("error fetching previous confession message: %w", err)
-		}
-
-		// Edit the message, keeping the same content and embeds but removing the components
-		_, err = s.ChannelMessageEditComplex(&dg.MessageEdit{
-			ID:         guildCfg.LastConfessionMessageID,
-			Channel:    guildCfg.ConfessionChannelID,
-			Content:    &message.Content,         // Use the current content
-			Embeds:     &message.Embeds,          // Keep the current embeds
-			Components: &[]dg.MessageComponent{}, // Remove the components (buttons)
-		})
-		if err != nil {
-			return fmt.Errorf("error removing button from previous confession: %w", err)
-		}
-	}
+	editLastMessage(s, guildCfg)
 
 	// 3. Post the new confession anonymously
 	msg, err := s.ChannelMessageSendComplex(guildCfg.ConfessionChannelID, &dg.MessageSend{
@@ -219,11 +223,10 @@ func confessButtonClickHandler(s *dg.Session, i *dg.InteractionCreate) {
 
 func (b *Bot) confessHandler(s *dg.Session, i *dg.InteractionCreate) {
 
-    if err := checkInteractionMemberNil(i); err != nil {
+	if err := checkInteractionMemberNil(i); err != nil {
 		sendEphemeralMessage(s, i, "internal problem: tag noon if you want to help")
-        return
-    }
-
+		return
+	}
 
 	confession := i.ApplicationCommandData().Options[0].StringValue()
 	userID := i.Member.User.ID
@@ -329,10 +332,10 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 		return false
 	}
 
-    if err := checkInteractionMemberNil(i); err != nil {
+	if err := checkInteractionMemberNil(i); err != nil {
 		sendEphemeralMessage(s, i, "internal problem: tag noon if you want to help")
-        return false
-    }
+		return false
+	}
 
 	// Check if the user is the server owner
 	if i.Member.User.ID == guild.OwnerID {
@@ -340,7 +343,7 @@ func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {
 	}
 
 	// Fetch the user's permissions in the guild
-    permissions := i.Member.Permissions
+	permissions := i.Member.Permissions
 
 	// Check for Administrator or ManageServer permissions
 	return permissions&dg.PermissionAdministrator != 0
