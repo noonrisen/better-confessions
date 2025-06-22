@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"noon_confession_bot/internal/utils"
 	"regexp"
 
 	dg "github.com/bwmarrin/discordgo"
@@ -59,7 +60,7 @@ func checkState(gc *GuildConfig) error {
 }
 
 // Function to check the post limit for a user
-func (b *Bot) checkPostLimit(guildID, userID string) (bool, error) {
+func (b *Bot) checkIncrementPostLimit(guildID, userID string) (bool, error) {
 	secureKey := b.generateSecureKey(guildID, userID)
 
 	guildCfg := b.GetGuildCfg(guildID)
@@ -75,26 +76,33 @@ func (b *Bot) checkPostLimit(guildID, userID string) (bool, error) {
 }
 
 func editLastMessage(s *dg.Session, guildCfg *GuildConfig) {
-	if guildCfg.LastConfessionMessageID != "" {
+	if guildCfg.LastConfessionMessageID == "" {
+		return
+	}
 
-		// Fetch the message to get its current content and embeds
-		message, err := s.ChannelMessage(guildCfg.ConfessionChannelID, guildCfg.LastConfessionMessageID)
-		if err != nil {
-			log.Printf("error fetching previous confession message: %s", err.Error())
-			return
-		}
+	// Fetch the message to get its current content and embeds
+	message, err := s.ChannelMessage(guildCfg.ConfessionChannelID, guildCfg.LastConfessionMessageID)
+	if err != nil {
+		log.Printf("error fetching previous confession message: %s", err.Error())
+		return
+	}
 
-		// Edit the message, keeping the same content and embeds but removing the components
-		_, err = s.ChannelMessageEditComplex(&dg.MessageEdit{
-			ID:         guildCfg.LastConfessionMessageID,
-			Channel:    guildCfg.ConfessionChannelID,
-			Content:    &message.Content,         // Use the current content
-			Embeds:     &message.Embeds,          // Keep the current embeds
-			Components: &[]dg.MessageComponent{}, // Remove the components (buttons)
-		})
-		if err != nil {
-			log.Printf("error removing button from previous confession: %s", err.Error())
-		}
+	// if the last message was just a url, we do not want to mess up the embed.
+	embed := &message.Embeds
+	if _, err := utils.Url(message.Content); err == nil {
+		embed = nil
+	}
+
+	// Edit the message, keeping the same content and embeds but removing the components
+	_, err = s.ChannelMessageEditComplex(&dg.MessageEdit{
+		ID:         guildCfg.LastConfessionMessageID,
+		Channel:    guildCfg.ConfessionChannelID,
+		Content:    &message.Content,         // Use the current content
+		Embeds:     embed,                    // Keep the current embeds
+		Components: &[]dg.MessageComponent{}, // Remove the components (buttons)
+	})
+	if err != nil {
+		log.Printf("error removing button from previous confession: %s", err.Error())
 	}
 }
 
@@ -109,12 +117,9 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	}
 
 	// 1. Check # of posts
-	allowed, err := b.checkPostLimit(guildID, userID)
-	if err != nil {
+	if allowed, err := b.checkIncrementPostLimit(guildID, userID); err != nil {
 		return fmt.Errorf("error checking post limit: %w", err)
-	}
-
-	if !allowed {
+	} else if !allowed {
 		return fmt.Errorf("you have exceeded the maximum number of allowed posts")
 	}
 
@@ -126,28 +131,28 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 	editLastMessage(s, guildCfg)
 
 	// 3. Post the new confession anonymously
-	msg, err := s.ChannelMessageSendComplex(guildCfg.ConfessionChannelID, &dg.MessageSend{
-		Embeds: []*dg.MessageEmbed{
-			{
-				Title:       fmt.Sprintf("Confession #%d", guildCfg.ConfessionNo),
-				Description: confession,
-			},
-		},
-		Components: []dg.MessageComponent{
-			dg.ActionsRow{
-				Components: []dg.MessageComponent{
-					dg.Button{
-						Label:    "Submit a confession!",
-						CustomID: "confess_button",
-						Style:    dg.PrimaryButton,
-					},
+	var msg *dg.Message
+	var postErr error
+	if url, err := utils.Url(confession); err == nil {
+		// if the confession is just a url, post just that
+		msg, postErr = s.ChannelMessageSendComplex(guildCfg.ConfessionChannelID, &dg.MessageSend{
+			Content:    *url,
+			Components: ConfessButtonMessageComponent,
+		})
+	} else {
+		msg, postErr = s.ChannelMessageSendComplex(guildCfg.ConfessionChannelID, &dg.MessageSend{
+			Embeds: []*dg.MessageEmbed{
+				{
+					Title:       fmt.Sprintf("Confession #%d", guildCfg.ConfessionNo),
+					Description: confession,
 				},
 			},
-		},
-	})
+			Components: ConfessButtonMessageComponent,
+		})
+	}
 
-	if err != nil {
-		return fmt.Errorf("error posting confession: %w", err)
+	if postErr != nil {
+		return fmt.Errorf("error posting confession: %w", postErr)
 	}
 
 	// 4. Store the message ID of the new confession
@@ -306,7 +311,6 @@ func (b *Bot) setMaxConfessionsHandler(s *dg.Session, i *dg.InteractionCreate) {
 	defer guildCfg.Mu.Unlock()
 	guildCfg.MaxPosts = uint(userInt)
 	sendEphemeralMessage(s, i, fmt.Sprintf("Max # of posts allowed is now: %d", guildCfg.MaxPosts))
-	return
 }
 
 func (b *Bot) resetPostCounterHandler(s *dg.Session, i *dg.InteractionCreate) {
@@ -320,8 +324,7 @@ func (b *Bot) resetPostCounterHandler(s *dg.Session, i *dg.InteractionCreate) {
 	guildCfg.Mu.Lock()
 	defer guildCfg.Mu.Unlock()
 	guildCfg.PostCounter = make(map[string]uint)
-	sendEphemeralMessage(s, i, fmt.Sprintf(":white_check_mark: Reset complete."))
-	return
+	sendEphemeralMessage(s, i, ":white_check_mark: Reset complete.")
 }
 
 func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {

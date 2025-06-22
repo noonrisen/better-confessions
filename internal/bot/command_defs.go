@@ -68,3 +68,15 @@ var (
 		},
 	}
 )
+
+var ConfessButtonMessageComponent = []dg.MessageComponent{
+	dg.ActionsRow{
+		Components: []dg.MessageComponent{
+			dg.Button{
+				Label:    "Submit a confession!",
+				CustomID: "confess_button",
+				Style:    dg.PrimaryButton,
+			},
+		},
+	},
+}

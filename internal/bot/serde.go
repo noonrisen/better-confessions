@@ -54,9 +54,9 @@ func (b *Bot) SaveData(filename string) {
 	err = encoder.Encode(botData)
 	if err != nil {
 		log.Printf("Error encoding data: %v", err)
-        return
+		return
 	}
-    log.Printf("Saved state to: %s", filename)
+	log.Printf("Saved state to: %s", filename)
 }
 
 // LoadData reads the Gob file and deserializes it into GuildConfigs and Salt.
@@ -97,5 +97,5 @@ func (b *Bot) LoadData(filename string) {
 
 	// Load the Salt
 	b.Salt = botData.Salt
-    log.Printf("Loaded state from: %s", filename)
+	log.Printf("Loaded state from: %s", filename)
 }
