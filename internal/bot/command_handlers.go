@@ -8,8 +8,10 @@ import (
 	"log"
 	"noon_confession_bot/internal/utils"
 	"regexp"
+	"strings"
 
 	dg "github.com/bwmarrin/discordgo"
+	"github.com/cloudflare/ahocorasick"
 )
 
 //
@@ -121,6 +123,15 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 		return fmt.Errorf("error checking post limit: %w", err)
 	} else if !allowed {
 		return fmt.Errorf("you have exceeded the maximum number of allowed posts")
+	}
+
+	// 2. Check for censored words
+	if guildCfg.CensoredWordsMatcher != nil {
+		confessionLower := strings.ToLower(confession)
+		matches := guildCfg.CensoredWordsMatcher.Match([]byte(confessionLower))
+		if len(matches) > 0 {
+			return fmt.Errorf("your confession contains words that are not allowed")
+		}
 	}
 
 	// Trim excess newlines
@@ -325,6 +336,93 @@ func (b *Bot) resetPostCounterHandler(s *dg.Session, i *dg.InteractionCreate) {
 	defer guildCfg.Mu.Unlock()
 	guildCfg.PostCounter = make(map[string]uint)
 	sendEphemeralMessage(s, i, ":white_check_mark: Reset complete.")
+}
+
+func (b *Bot) setCensoredWordsHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
+	if !hasPermission(s, i) {
+		sendEphemeralMessage(s, i, ":x: You can't do that.")
+		return
+	}
+
+	guildCfg.Mu.Lock()
+	currentWords := strings.Join(guildCfg.CensoredWords, ", ")
+	guildCfg.Mu.Unlock()
+
+	modal := dg.InteractionResponse{
+		Type: dg.InteractionResponseModal,
+		Data: &dg.InteractionResponseData{
+			CustomID: "censored_words_modal",
+			Title:    "Set Censored Words",
+			Components: []dg.MessageComponent{
+				dg.ActionsRow{
+					Components: []dg.MessageComponent{
+						dg.TextInput{
+							Label:       "Censored Words (comma separated)",
+							CustomID:    "censored_words_input",
+							Style:       dg.TextInputParagraph,
+							MinLength:   0,
+							MaxLength:   4000,
+							Placeholder: "word1, word2, word3",
+							Value:       currentWords,
+							Required:    false,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := s.InteractionRespond(i.Interaction, &modal)
+	if err != nil {
+		log.Println("Failed to send censored words modal:", err)
+		sendEphemeralMessage(s, i, ":x: Failed to open modal.")
+	}
+}
+
+func (b *Bot) censoredWordsModalHandler(s *dg.Session, i *dg.InteractionCreate) {
+	guildID := i.GuildID
+	guildCfg := b.GetGuildCfg(guildID)
+
+	if !hasPermission(s, i) {
+		sendEphemeralMessage(s, i, ":x: You can't do that.")
+		return
+	}
+
+	wordsInput := i.ModalSubmitData().Components[0].(*dg.ActionsRow).Components[0].(*dg.TextInput).Value
+
+	// Parse comma-separated words, trim whitespace, convert to lowercase, and filter out empty strings
+	words := []string{}
+	if wordsInput != "" {
+		parts := strings.Split(wordsInput, ",")
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				// Convert to lowercase when storing
+				words = append(words, strings.ToLower(trimmed))
+			}
+		}
+	}
+
+	guildCfg.Mu.Lock()
+	guildCfg.CensoredWords = words
+	// Rebuild the matcher with the new words
+	if len(words) > 0 {
+		guildCfg.CensoredWordsMatcher = ahocorasick.NewStringMatcher(words)
+	} else {
+		guildCfg.CensoredWordsMatcher = nil
+	}
+	guildCfg.Mu.Unlock()
+
+	s.InteractionRespond(i.Interaction, &dg.InteractionResponse{
+		Type: dg.InteractionResponseChannelMessageWithSource,
+		Data: &dg.InteractionResponseData{
+			Flags:   dg.MessageFlagsEphemeral,
+			Content: fmt.Sprintf(":white_check_mark: Censored words updated. (%d words)", len(words)),
+		},
+	})
 }
 
 func hasPermission(s *dg.Session, i *dg.InteractionCreate) bool {

@@ -4,7 +4,10 @@ import (
 	"encoding/gob"
 	"log"
 	"os"
+	"strings"
 	"sync"
+
+	"github.com/cloudflare/ahocorasick"
 )
 
 // BotDataForSerialization is a structure that holds all the data we want to serialize
@@ -20,6 +23,7 @@ type GuildConfigWithoutMutex struct {
 	ConfessionNo            uint
 	Active                  bool
 	MaxPosts                uint
+	CensoredWords           []string
 }
 
 // SaveData serializes GuildConfigs and Salt using Gob and writes it to a file.
@@ -43,6 +47,7 @@ func (b *Bot) SaveData(filename string) {
 			ConfessionNo:            v.ConfessionNo,
 			Active:                  v.Active,
 			MaxPosts:                v.MaxPosts,
+			CensoredWords:           v.CensoredWords,
 		}
 	}
 
@@ -84,6 +89,16 @@ func (b *Bot) LoadData(filename string) {
 	// Convert back to GuildConfig with mutex
 	b.GuildConfigs = make(map[string]*GuildConfig)
 	for k, v := range botData.GuildConfigs {
+		// Convert loaded words to lowercase and rebuild matcher
+		lowerWords := make([]string, len(v.CensoredWords))
+		for i, word := range v.CensoredWords {
+			lowerWords[i] = strings.ToLower(word)
+		}
+		var matcher *ahocorasick.Matcher
+		if len(lowerWords) > 0 {
+			matcher = ahocorasick.NewStringMatcher(lowerWords)
+		}
+
 		b.GuildConfigs[k] = &GuildConfig{
 			ConfessionChannelID:     v.ConfessionChannelID,
 			PostCounter:             v.PostCounter,
@@ -91,6 +106,8 @@ func (b *Bot) LoadData(filename string) {
 			ConfessionNo:            v.ConfessionNo,
 			Active:                  v.Active,
 			MaxPosts:                v.MaxPosts,
+			CensoredWords:           lowerWords,
+			CensoredWordsMatcher:    matcher,
 			Mu:                      sync.Mutex{},
 		}
 	}

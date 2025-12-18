@@ -66,6 +66,10 @@ var (
 			Name:        "reset-post-counter",
 			Description: "Allow everyone to confess again, i.e. reset the post counter.",
 		},
+		{
+			Name:        "set-censored-words",
+			Description: "Set the list of censored words (admin only)",
+		},
 	}
 )
 

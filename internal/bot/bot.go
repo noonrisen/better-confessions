@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	dg "github.com/bwmarrin/discordgo"
+	"github.com/cloudflare/ahocorasick"
 
 	"noon_confession_bot/internal/utils"
 )
@@ -16,6 +17,8 @@ type GuildConfig struct {
 	ConfessionNo            uint
 	Active                  bool
 	MaxPosts                uint
+	CensoredWords           []string
+	CensoredWordsMatcher    *ahocorasick.Matcher
 	Mu                      sync.Mutex
 }
 
@@ -34,6 +37,7 @@ var (
 		"toggle-confessions":  (*Bot).toggleConfessionsHandler,
 		"set-max-confessions": (*Bot).setMaxConfessionsHandler,
 		"reset-post-counter":  (*Bot).resetPostCounterHandler,
+		"set-censored-words":  (*Bot).setCensoredWordsHandler,
 	}
 )
 
@@ -45,6 +49,8 @@ func NewGuildConfig() GuildConfig {
 		ConfessionNo:            0,
 		Active:                  true,
 		MaxPosts:                2,
+		CensoredWords:           []string{},
+		CensoredWordsMatcher:    nil,
 		// the mutex's 0 value is already functional
 	}
 }
@@ -106,6 +112,8 @@ func (b *Bot) AddInteractionHandlers() {
 			// Handle modal submissions
 			if i.ModalSubmitData().CustomID == "confession_modal" {
 				b.confessionModalHandler(s, i)
+			} else if i.ModalSubmitData().CustomID == "censored_words_modal" {
+				b.censoredWordsModalHandler(s, i)
 			}
 		}
 	})
