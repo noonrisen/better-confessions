@@ -9,14 +9,43 @@ import (
 	"noon_confession_bot/internal/utils"
 	"regexp"
 	"strings"
+	"unicode"
 
 	dg "github.com/bwmarrin/discordgo"
 	"github.com/cloudflare/ahocorasick"
+	"github.com/mtibben/confusables"
 )
 
 //
 // Internals/Helpers
 //
+
+// stripZeroWidthChars removes Unicode format characters (including zero-width characters) from a string
+func stripZeroWidthChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		// Remove all Unicode format characters (Cf category), which includes zero-width characters
+		if unicode.Is(unicode.Cf, r) {
+			return -1 // Remove character
+		}
+		return r
+	}, s)
+}
+
+// buildSkeletonMatcher creates an Aho-Corasick matcher from words using TR-39 skeletons
+func buildSkeletonMatcher(words []string) *ahocorasick.Matcher {
+	if len(words) == 0 {
+		return nil
+	}
+	
+	skeletonWords := make([]string, len(words))
+	for i, word := range words {
+		// Strip zero-width chars, then convert to skeleton
+		cleaned := stripZeroWidthChars(word)
+		skeletonWords[i] = confusables.Skeleton(cleaned)
+	}
+	
+	return ahocorasick.NewStringMatcher(skeletonWords)
+}
 
 func checkInteractionMemberNil(i *dg.InteractionCreate) error {
 	if i == nil {
@@ -125,10 +154,12 @@ func (b *Bot) processConfession(s *dg.Session, confession string, userID, guildI
 		return fmt.Errorf("you have exceeded the maximum number of allowed posts")
 	}
 
-	// 2. Check for censored words
+	// 2. Check for censored words using TR-39 skeletons
 	if guildCfg.CensoredWordsMatcher != nil {
-		confessionLower := strings.ToLower(confession)
-		matches := guildCfg.CensoredWordsMatcher.Match([]byte(confessionLower))
+		// Strip zero-width chars and convert to skeleton for matching
+		cleaned := stripZeroWidthChars(confession)
+		skeleton := confusables.Skeleton(cleaned)
+		matches := guildCfg.CensoredWordsMatcher.Match([]byte(skeleton))
 		if len(matches) > 0 {
 			return fmt.Errorf("your confession contains words that are not allowed")
 		}
@@ -408,12 +439,8 @@ func (b *Bot) censoredWordsModalHandler(s *dg.Session, i *dg.InteractionCreate) 
 
 	guildCfg.Mu.Lock()
 	guildCfg.CensoredWords = words
-	// Rebuild the matcher with the new words
-	if len(words) > 0 {
-		guildCfg.CensoredWordsMatcher = ahocorasick.NewStringMatcher(words)
-	} else {
-		guildCfg.CensoredWordsMatcher = nil
-	}
+	// Rebuild the matcher using TR-39 skeletons (cached in memory)
+	guildCfg.CensoredWordsMatcher = buildSkeletonMatcher(words)
 	guildCfg.Mu.Unlock()
 
 	s.InteractionRespond(i.Interaction, &dg.InteractionResponse{

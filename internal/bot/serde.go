@@ -6,8 +6,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/cloudflare/ahocorasick"
 )
 
 // BotDataForSerialization is a structure that holds all the data we want to serialize
@@ -89,15 +87,13 @@ func (b *Bot) LoadData(filename string) {
 	// Convert back to GuildConfig with mutex
 	b.GuildConfigs = make(map[string]*GuildConfig)
 	for k, v := range botData.GuildConfigs {
-		// Convert loaded words to lowercase and rebuild matcher
+		// Convert loaded words to lowercase (store original words on disk)
 		lowerWords := make([]string, len(v.CensoredWords))
 		for i, word := range v.CensoredWords {
 			lowerWords[i] = strings.ToLower(word)
 		}
-		var matcher *ahocorasick.Matcher
-		if len(lowerWords) > 0 {
-			matcher = ahocorasick.NewStringMatcher(lowerWords)
-		}
+		// Rebuild skeleton matcher (cached in memory only)
+		matcher := buildSkeletonMatcher(lowerWords)
 
 		b.GuildConfigs[k] = &GuildConfig{
 			ConfessionChannelID:     v.ConfessionChannelID,
